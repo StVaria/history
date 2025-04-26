@@ -15,7 +15,6 @@
         .menu, .settings, .question-container, #leaderboard { text-align: center; }
         .settings select { margin: 5px; padding: 5px; }
         .question { margin-bottom: 20px; font-size: 1.2em; }
-        #question-image { max-width: 100%; margin-bottom: 20px; display: none; border-radius: 10px; }
         .answers { list-style: none; padding: 0; }
         .answers li { margin-bottom: 10px; }
         .answers li label { display: flex; align-items: center; cursor: pointer; padding: 10px; border: 1px solid #245ABC; border-radius: 8px; transition: 0.3s; }
@@ -27,6 +26,8 @@
         #leaderboard th, #leaderboard td { border: 1px solid #ddd; padding: 8px; }
         #leaderboard th { background: #245ABC; color: #fff; }
     </style>
+    <!-- Telegram Web App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
 <div class="quiz-container">
@@ -45,20 +46,21 @@
                 <option value="20">20</option>
                 <option value="50">50</option>
             </select>
-        </label><br>
+        </label>
+        <br>
         <label>Уровень сложности:
             <select id="difficulty">
                 <option value="easy">Легко</option>
                 <option value="medium">Средне</option>
                 <option value="hard">Сложно</option>
             </select>
-        </label><br>
+        </label>
+        <br>
         <button id="confirm-settings-btn" disabled>Поехали!</button>
     </div>
 
     <div id="question-container" class="question-container" style="display:none;">
         <div class="question" id="question"></div>
-        <img id="question-image" alt="Изображение к вопросу">
         <ul class="answers" id="answers"></ul>
         <button id="submit-btn">Ответить</button>
         <button id="next-btn" style="display:none;">Далее</button>
@@ -71,83 +73,147 @@
             <thead><tr><th>Игрок</th><th>Очки</th></tr></thead>
             <tbody id="leaderboard-body"></tbody>
         </table>
+        <button id="restart-btn">Играть ещё раз</button>
         <button id="back-to-menu-btn">Назад</button>
     </div>
 </div>
 
 <script>
+// Инициализация Telegram Web App
+const tg = window.Telegram.WebApp;
+tg.ready();
+
+// Регистрация пользователя через Telegram
+const tgUser = tg.initDataUnsafe?.user || {};
+const username = tgUser.first_name
+    ? tgUser.first_name + (tgUser.last_name ? ' ' + tgUser.last_name : '')
+    : 'Гость';
+localStorage.setItem('quiz_username', username);
+
+// Инициализация переменных викторины
 let questions = [];
 let selectedQuestions = [];
 let currentIndex = 0;
 let score = 0;
 const confirmBtn = document.getElementById('confirm-settings-btn');
+confirmBtn.disabled = true;
 
-// Загрузка вопросов без кэша
+// Загрузка JSON вопросов без кэша
 fetch('questions.json?t=' + Date.now(), { cache: 'no-store' })
-  .then(res => { if (!res.ok) throw new Error(res.statusText); return res.json(); })
-  .then(data => { questions = data; confirmBtn.disabled = false; })
-  .catch(err => alert('Не удалось загрузить вопросы: ' + err.message));
-
-// Перетасовка массива
-function shuffle(arr) { return arr.sort(() => Math.random() - 0.5); }
-
-// Обработчики меню
-document.getElementById('start-game-btn').addEventListener('click', () => {
-  document.getElementById('menu').style.display = 'none';
-  document.getElementById('settings').style.display = 'block';
-});
-
-// Вспомогательные кнопки (если есть логика турнирной таблицы)
-document.getElementById('view-leaderboard-btn').addEventListener('click', () => alert('Лидерборд из API')); // временная заглушка
-// или сделать document.getElementById('back-to-menu-btn').addEventListener('click', ...) по аналогии
-
-// Отображение вопроса сразу, включая картинку
-function showQuestion() {
-  const q = selectedQuestions[currentIndex];
-  document.getElementById('question').textContent = `${currentIndex+1}. ${q.question}`;
-  const img = document.getElementById('question-image');
-  if (q.image) { img.src = q.image; img.style.display = 'block'; }
-  else { img.src = ''; img.style.display = 'none'; }
-
-  const ul = document.getElementById('answers');
-  ul.innerHTML = '';
-  shuffle(q.answers).forEach(ans => {
-    ul.insertAdjacentHTML('beforeend', `
-      <li><label><input type="radio" name="answer" value="${ans}"><span>${ans}</span></label></li>`);
+  .then(res => {
+    if (!res.ok) throw new Error(`HTTP статус ${res.status}`);
+    return res.json();
+  })
+  .then(data => {
+    questions = data;
+    confirmBtn.disabled = false;
+  })
+  .catch(err => {
+    alert('Не удалось загрузить вопросы: ' + err.message);
+    console.error(err);
   });
 
-  document.getElementById('submit-btn').style.display = 'inline-block';
-  document.getElementById('next-btn').style.display = 'none';
-  document.getElementById('result').textContent = '';
+// Обработчики кнопок меню
+
+document.getElementById('start-game-btn').addEventListener('click', () => {
+    document.getElementById('menu').style.display = 'none';
+    document.getElementById('settings').style.display = 'block';
+});
+
+document.getElementById('view-leaderboard-btn').addEventListener('click', showLeaderboard);
+document.getElementById('back-to-menu-btn').addEventListener('click', () => {
+    document.getElementById('leaderboard').style.display = 'none';
+    document.getElementById('menu').style.display = 'block';
+});
+
+document.getElementById('restart-btn').addEventListener('click', showSettings);
+
+function shuffle(arr) {
+    return arr.sort(() => Math.random() - 0.5);
 }
 
-// Начало викторины
+// Запуск игры после подтверждения настроек
 confirmBtn.addEventListener('click', () => {
-  const count = +document.getElementById('question-count').value;
-  const diff = document.getElementById('difficulty').value;
-  let pool = questions;
-  if (pool[0]?.difficulty) pool = pool.filter(q => q.difficulty === diff);
-  selectedQuestions = shuffle(pool).slice(0, count);
-  document.getElementById('settings').style.display = 'none';
-  currentIndex = 0; score = 0;
-  showQuestion();
-  document.getElementById('question-container').style.display = 'block';
+    const count = +document.getElementById('question-count').value;
+    const difficulty = document.getElementById('difficulty').value;
+    let pool = questions;
+    if (pool[0]?.difficulty) pool = pool.filter(q => q.difficulty === difficulty);
+    selectedQuestions = shuffle(pool).slice(0, count);
+    document.getElementById('settings').style.display = 'none';
+    startQuiz();
 });
 
-// Обработка ответа
+function startQuiz() {
+    currentIndex = 0;
+    score = 0;
+    showQuestion();
+    document.getElementById('question-container').style.display = 'block';
+}
+
+function showQuestion() {
+    const q = selectedQuestions[currentIndex];
+    document.getElementById('question').textContent = `${currentIndex+1}. ${q.question}`;
+    const ul = document.getElementById('answers'); ul.innerHTML = '';
+    shuffle(q.answers).forEach(ans => {
+        const li = document.createElement('li');
+        const input = document.createElement('input'); input.type = 'radio'; input.name = 'answer'; input.value = ans; input.id = ans;
+        const span = document.createElement('span'); span.textContent = ans;
+        const label = document.createElement('label'); label.htmlFor = ans;
+        label.append(input, span);
+        li.appendChild(label);
+        ul.appendChild(li);
+    });
+    document.getElementById('submit-btn').style.display = 'inline-block';
+    document.getElementById('next-btn').style.display = 'none';
+    document.getElementById('result').textContent = '';
+}
+
 document.getElementById('submit-btn').addEventListener('click', () => {
-  const sel = document.querySelector('input[name="answer"]:checked');
-  if (!sel) return alert('Выберите ответ!');
-  const q = selectedQuestions[currentIndex];
-  const resEl = document.getElementById('result');
-  resEl.textContent = sel.value === q.correct ? 'Правильно!' : `Неверно. Правильный ответ: ${q.correct}`;
-  if (sel.value === q.correct) score++;
-  document.getElementById('submit-btn').style.display = 'none';
-  if (currentIndex < selectedQuestions.length - 1) document.getElementById('next-btn').style.display = 'inline-block';
+    const sel = document.querySelector('input[name="answer"]:checked');
+    if (!sel) { alert('Выберите ответ!'); return; }
+    const q = selectedQuestions[currentIndex];
+    const resEl = document.getElementById('result');
+    resEl.textContent = sel.value === q.correct ? 'Правильно!' : `Неверно. Правильный ответ: ${q.correct}`;
+    if (sel.value === q.correct) score++;
+    document.getElementById('submit-btn').style.display = 'none';
+    if (currentIndex < selectedQuestions.length - 1) document.getElementById('next-btn').style.display = 'inline-block';
+    else finishQuiz();
 });
 
-// Далее
-document.getElementById('next-btn').addEventListener('click', () => { currentIndex++; showQuestion(); });
+document.getElementById('next-btn').addEventListener('click', () => {
+    currentIndex++;
+    showQuestion();
+});
+
+function finishQuiz() {
+    document.getElementById('question-container').style.display = 'none';
+    // Локальный лидерборд
+    const board = JSON.parse(localStorage.getItem('quiz_leaderboard') || '[]');
+    board.push({ player: username, score });
+    board.sort((a,b) => b.score - a.score);
+    localStorage.setItem('quiz_leaderboard', JSON.stringify(board));
+    // Отправка результата боту
+    tg.sendData(JSON.stringify({ player: username, score }));
+    alert(`Ваш результат ${score} отправлен боту!`);
+    showLeaderboard();
+}
+
+function showLeaderboard() {
+    document.getElementById('menu').style.display = 'none';
+    document.getElementById('settings').style.display = 'none';
+    document.getElementById('question-container').style.display = 'none';
+    const board = JSON.parse(localStorage.getItem('quiz_leaderboard') || '[]');
+    const tb = document.getElementById('leaderboard-body'); tb.innerHTML = '';
+    board.forEach(e => tb.insertAdjacentHTML('beforeend', `<tr><td>${e.player}</td><td>${e.score}</td></tr>`));
+    document.getElementById('leaderboard').style.display = 'block';
+}
+
+function showSettings() {
+    document.getElementById('menu').style.display = 'none';
+    document.getElementById('question-container').style.display = 'none';
+    document.getElementById('leaderboard').style.display = 'none';
+    document.getElementById('settings').style.display = 'block';
+}
 </script>
 </body>
 </html>
